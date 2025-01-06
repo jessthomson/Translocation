@@ -1,0 +1,317 @@
+library(gridExtra)
+library(lubridate)
+library(tidyverse)
+library(brms)
+
+setwd()
+
+
+dat <- read.csv("weights_df2.csv")
+
+dat <- dat |>
+  filter(!is.na(date) & date !="")
+
+dat <- dat |>
+  dplyr::mutate(date = parse_date_time(date, orders =c("dmy", "mdy", "ymd")))
+
+dat <- dat |>
+  dplyr::mutate(release_season.x = factor(release_season.x, levels = c("summer2023", "autumn2023", "spring2024")))
+
+glimpse(dat)
+  
+dat$sex <- ifelse(dat$sex.x == "F", "Female", "Male")
+
+hist(log(dat$weight))
+
+dat$log_weight <- log(dat$weight)
+
+dat$date <- as.Date(dat$date)
+
+
+ggplot(dat, aes(y = weight, x = date, group = pit_id, colour = sex.x)) +
+  stat_summary(aes(group = sex.x), fun = "mean", geom = "line", size = 1.5) +
+  stat_summary(aes(group = sex.x, fill = sex.x), fun.data = "mean_sdl", fun.args = list(mult = 1), 
+               geom = "ribbon", alpha = 0.2, color = NA) +
+  facet_wrap(~release_season.x, scales = "free_x") +  # free_x removes empty months in each facet
+  scale_x_date(
+    date_breaks = "1 month",
+    date_labels = "%b",
+    expand = expansion(mult = c(0.05,0))
+  ) +
+  theme_classic() +
+  theme(
+    legend.position = "right",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+# summary(m1 <- brm(log_weight ~ days_since_release + release_type + rs + sex + 
+#                     days_since_release:release_type + days_since_release:rs +
+#                     days_since_release:sex + (1|pit_id), data = dat))
+
+#-------------------------------------------------------------------------------
+# now exclude spring 2022 & first weight
+#sub.dat <- filter(dat, !(release_season == "spring2022" & days_since_release == 0))
+
+# fit bayesian model
+
+m2 <- brm(log_weight ~ days_alive + release_type.x + release_season.x + sex.x + 
+                    days_alive:release_type.x + days_alive:release_season.x +
+                    days_alive:sex.x + (1|pit_id), data = dat)
+
+summary(m2)
+
+# extract posterior draws/slope parameters from fitted model
+cf <- as.data.frame(m2)
+
+# sd intercept
+exp(0.12) # 1.12
+exp(0.09) # 1.09
+exp(0.15) # 1.16
+
+# intercept
+exp(1.56) #4.75  intercept baseline
+exp(1.36) # 3.89
+exp(1.76) # 5.81
+
+# time
+exp(0.01)*4.75 # 4.79
+exp(-0.00)*4.75 # lower 4.75
+exp(0.02)*4.75 # upper 4.85
+
+# soft
+exp(0.08)*4.75 # estimate soft 5.14
+exp(-0.07)*4.75 # lower 4.42
+exp(0.24)*4.75 # upper 6.04
+
+#autumn
+exp(0.27)*4.75 # estimate = 6.22
+exp(0.03)*4.75 # lower 4.89
+exp(0.51)*4.75 # upper 7.91
+
+# spring
+exp(0.21)*4.75 # = 5.86
+exp(-0.01)*4.75 # 4.70 lwr
+exp(0.40)*4.75 # 7.09 upper
+
+# sex 
+exp(-0.07)*4.75 # 4.43
+exp(-0.23)*4.75 # 3.77
+exp(0.09)*4.75 # 5.19
+
+# time : soft
+exp(-0.01)*4.75 # est 4.70
+exp(-0.01)*4.75 # 4.70 lwr
+exp(0.00)*4.75 # 4.75 uppr
+
+# time :autumn
+exp(-0.00)*4.75 #est
+exp(-0.01)*4.75 #lwr
+exp(0.01)*4.75 #upr
+
+# time:spr
+exp(-0.01)*4.75 #est
+exp(-0.03)*4.75 #lwr
+exp(0.00)*4.75 #upr
+
+#time:sex
+exp(-0.00)*4.75 #est
+exp(-0.01)*4.75 # Lwr
+exp(0.01)*4.75 #upr
+
+
+# calculate slope parameters of interest
+hr.fem <- quantile(cf[, 2], probs = c(0.025, 0.5, 0.975))
+sr.fem <- quantile(cf[, 2] + cf[, 7], probs = c(0.025, 0.5, 0.975))
+hr.male <- quantile(cf[, 2] + cf[, 10], probs = c(0.025, 0.5, 0.975))
+sr.male <- quantile(cf[, 2] + cf[, 7] + cf[, 10], probs = c(0.025, 0.5, 0.975))
+dif.sh <- quantile(cf[, 7], probs = c(0.025, 0.5, 0.975))
+dif.malefem <- quantile(cf[, 10], probs = c(0.025, 0.5, 0.975))
+
+# seasonal difference relative to autmun
+dif.spr <- quantile(cf[, 8], probs = c(0.025, 0.5, 0.975))
+dif.sum <- quantile(cf[, 8], probs = c(0.025, 0.5, 0.975))
+
+hr.fem_bt <- exp(hr.fem)
+sr.fem_bt <- exp(sr.fem)
+hr.male_bt <- exp(hr.male)
+sr.male_bt <- exp(sr.male)
+dif.sh_bt <- exp(dif.sh)
+dif.malefem_bt <- exp(dif.malefem)
+dif.spr_bt <- exp(dif.spr)
+dif.sum_bt <- exp(dif.sum)
+
+out_bt <- data.frame(rbind(hr.fem_bt, sr.fem_bt, hr.male_bt, sr.male_bt, dif.sh_bt, dif.malefem_bt, dif.spr_bt, dif.sum_bt))
+names(out_bt) <- c("lcl_bt","med_bt", "ucl_bt")
+out_bt$x <- c(1,2,4,5,7,8,9,10)
+                     
+
+# put in a dataframe
+out <- data.frame(rbind(hr.fem, sr.fem, hr.male, sr.male, dif.sh, dif.malefem, dif.spr, dif.sum))
+names(out) <- c("lcl", "med", "ucl")
+out$x <- c(1,2,4,5,7,8,9,10)
+#out
+
+out_bt_out <- cbind(out,out_bt)
+
+
+# plot
+par(mfrow = c(1, 1), mar = c(5, 5, 3, 1), mgp = c(3, 1, 0))
+plot(out$med ~ out$x, pch = 19, cex = 3, ylim = c(min(out$lcl), max(out$ucl)), xlim = c(0.5, 10.5), bty = "l",
+     xaxt = "n", xlab = "", ylab = "Slope estimate", cex.lab = 1.5, cex.axis = 1.2)
+  arrows(out$x, out$lcl, out$x, out$ucl, length = 0, lwd = 2)
+  par(mgp = c(3, 3, 0))
+  axis(1, at = c(1,2,4,5,7,8,9,10), labels = c("Hard\nFemale", "Soft\nFemale",
+                                      "Hard\nMale", "Soft\nMale",
+                                      "Soft -\nHard", "Male -\nFemale",
+                                      "Autumn -\nSpring", "Autumn -\nSummer"), cex.axis = 1.2)
+  abline(h = 0, col="red")
+  abline(v = 6)
+  par(mgp = c(3, 1, 0))
+  axis(3, at = c(3, 8.5), labels = c("A) Slope of weight change over time",
+                                     "B) Slope differences"), cex.axis = 1.5, tick = F)
+
+
+#-------------------------------------------------------------------------------
+# create and plot posterior estimates 
+
+results_df <- data.frame(
+    parameter = c("Intercept", 
+                  "Time (days)", 
+                  "Soft-release", 
+                  "Autumn 2023", 
+                  "Spring 2024", 
+                  "Male", 
+                  "Time (days) : Soft-release", 
+                  "Time (days) : Autumn 2023", 
+                  "Time (days) : Spring 2024", 
+                  "Time (days) : Male"),
+    estimate = c(1.56, 0.01, 0.08, 0.27, 0.21, -0.06, -0.01, -0.00, -0.01, -0.00),
+    lower_ci = c(1.37, -0.00, -0.07, 0.03, 0.01, -0.22, -0.01, -0.01, -0.03, -0.01),
+    upper_ci = c(1.75, 0.01, 0.24, 0.51, 0.40, 0.10, 0.00, 0.01, -0.00, 0.01)
+)
+
+results_df$parameter <- factor(results_df$parameter, levels = results_df$parameter)
+
+results_df$significant <- (results_df$lower_ci > 0 | results_df$upper_ci < 0)
+
+# plot posterior estimates 
+ggplot(results_df, aes(x = parameter, y = estimate)) +
+  geom_point(size = 3) +  # Points for the estimates
+  geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci), width = 0.2) +  # Error bars for CI
+  geom_hline(yintercept = 0, linetype = "solid", color = "red") +  # Reference line at 0
+  geom_text(
+    aes(label = ifelse(significant, "*", ""), y = upper_ci + 0.1),  # Asterisk for significant results
+    size = 5, color = "black"
+  ) +
+  labs(
+    title ="A) Posterior Estimates and 95% Credible Intervals for Model Predictors",
+    x = "Predictors",
+    y = "Estimate") + 
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels
+    axis.ticks.length = unit(0.2, "cm"),  # Adjust tick length
+    axis.title.x = element_text(size = 12),  # X-axis title size
+    axis.title.y = element_text(size = 12),  # Y-axis title size
+    panel.grid = element_blank()  # Add horizontal grid lines for readability
+  ) +
+  scale_y_continuous(
+    breaks = seq(-0.2, 1.6, by = 0.4),  # More ticks on the Y-axis
+    limits = c(-0.25, 1.75)  # Ensure plot accommodates labels and asterisks
+  )
+
+# backtransformed results
+results_df <- data.frame(
+parameter = c("Intercept", 
+  "Time (days)", 
+ "Soft-release", 
+  "Autumn 2023", 
+  "Spring 2024", 
+  "Male", 
+ "Time (days) : Soft-release", 
+ "Time (days) : Autumn 2023", 
+ "Time (days) : Spring 2024", 
+  "Time (days) : Male"), estimate = c(4.75, 4.79, 5.14, 6.22, 5.85, 4.43, 4.70, 4.75, 4.70, 4.75),
+lower_ci = c(3.89, 4.75, 4.42, 4.89, 4.70, 3.77, 4.70, 4.70, 4.61, 4.70),
+upper_ci = c(5.81, 4.85, 6.04, 7.91, 7.08, 5.19, 4.75, 4.79, 4.75, 4.79))
+
+results_df$parameter <- factor(
+  results_df$parameter, 
+  levels = c("Intercept", "Soft-release", "Autumn 2023", "Spring 2024", "Male", 
+             "Time (days)", "Time (days) : Soft-release", "Time (days) : Autumn 2023", 
+             "Time (days) : Spring 2024", "Time (days) : Male")
+)
+
+# add column to indicate significance
+results_df$significant <- results_df$lower_ci > 4.75 | results_df$upper_ci < 4.75
+
+
+# plot
+p1 <- ggplot(results_df, aes(x = parameter, y = estimate)) +
+  geom_point(size = 3) +  # Color points based on significance
+  geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci), width = 0.2, size = 1) +
+  geom_hline(yintercept = 4.75, linetype = "solid", color = "red") +  
+  geom_text(
+    aes(label = ifelse(significant, "*", ""), y = upper_ci + 0.1),  # Asterisk for significant results
+    size = 5, color = "black"
+  ) +# Reference line
+  labs(
+    title = "A)",
+    x = "Predictors",
+    y = "Weight (g)"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1), 
+    axis.title.x = element_text(size = 12), 
+    axis.title.y = element_text(size = 12)
+  )
+
+
+
+
+#-------------------------------------------------------------------------------
+
+predictions <- predict(m2, summary =TRUE)
+
+dat_with_preds <- cbind(dat, predictions)
+
+
+
+new_data <- expand.grid(days_alive = seq(min(dat$days_alive), max(dat$days_alive), length.out=100),
+                        release_type.x = c("SOFT", "HARD"),
+                        release_season.x =c("summer2023", "autumn2023", "spring2024"),
+                                            sex.x=c("M", "F"))
+# predict on expanded dataset
+new_predictions <- predict(m2, newdata = new_data, summary=TRUE, re_formula =NA)
+
+new_data_with_preds <- cbind(new_data, new_predictions)
+
+# combine predictions with new dataset 
+new_data_with_preds <- new_data_with_preds |>
+  dplyr::mutate(RealWeight = exp(Estimate),
+                LowerCI = exp(Q2.5),
+                UpperCI = exp(Q97.5))
+
+# back transformed predicted weight trajectories 
+p2 <- ggplot(new_data_with_preds, aes(x = days_alive, y = RealWeight, color = release_type.x)) +
+  geom_line(size = 1.4) +  # Mean predictions
+  geom_ribbon(aes(ymin = LowerCI, ymax = UpperCI, fill = release_type.x), alpha = 0.08, color=NA) +  # Confidence intervals
+  facet_grid(sex.x ~ release_season.x, labeller = labeller(
+    release_season.x = c("summer2023"="Summer 2023","autumn2023" = "Autumn 2023", "spring2024" = "Spring 2024"),
+    sex.x = c("M" = "Male", "F" = "Female")
+  )) +
+  scale_color_manual(values = c("SOFT" = "#E69F00", "HARD" = "#56B4E9"), name = "Release Type") +
+  scale_fill_manual(values = c("SOFT" = "#E69F00", "HARD" = "#56B4E9"), name = "Release Type") +
+  labs(title="B)",
+    x = "Time (days)",
+    y = "Predicted Weight (g)"
+  ) +
+  theme_classic() +
+  theme(
+    legend.position = "top",
+    legend.box.margin = margin(5, 5, 5, 5),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold", size = 14)
+  )
+
+combined_figure <- grid.arrange(p1, p2, nrow=2)
